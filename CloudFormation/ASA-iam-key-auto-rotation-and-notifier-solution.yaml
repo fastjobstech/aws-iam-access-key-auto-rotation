@@ -16,20 +16,18 @@ Metadata:
           - ExecutionRoleName
           - InventoryExecutionRoleName
           - DryRunFlag
-          - OrgListAccount
-          - OrgListRole
-          - StoreSecretsInCentralAccount
           - CredentialReplicationRegions
           - RunLambdaInVPC
           - VpcId
           - VpcCidr
           - SubnetId
+          - AWSAccountName
       - Label:
           default: Configure ASA Notifier Module
         Parameters:
           - AdminEmailAddress
+          - NotifyEmailAddress
           - ResourceOwnerTag
-          - AWSOrgID
           - EmailTemplateAudit
           - EmailTemplateEnforce
           - SMTPUserParamName
@@ -59,12 +57,6 @@ Metadata:
         default: Inventory Execution Role Name
       DryRunFlag:
         default: 'Dry Run Flag (Audit Mode)'
-      OrgListAccount:
-        default: Account to List Organization Accounts
-      OrgListRole:
-        default: List Accounts Role Name
-      StoreSecretsInCentralAccount:
-        default: Secrets Store flag for central account
       CredentialReplicationRegions:
         default: Regions to replicate the Credentials
       RunLambdaInVPC:
@@ -75,13 +67,15 @@ Metadata:
         default: VPC CIDR for Security Group Rule
       SubnetId:
         default: Subnet Id for Lambda functions
+      AWSAccountName:
+        default: AWS Account Name
       # Notifier Settings
       AdminEmailAddress:
         default: Admin Email Address
+      NotifyEmailAddress:
+        defualt: Notification Email Recipient
       ResourceOwnerTag:
         default: Resource Owner Tag
-      AWSOrgID:
-        default: AWS Organization ID
       EmailTemplateEnforce:
         default: 'Email Template File Name [Enforce Mode]'
       EmailTemplateAudit:
@@ -115,12 +109,12 @@ Parameters:
     Description: "Email address that will be used in the 'sent from' section of the email."
     Type: String
     Default: ""
-  ResourceOwnerTag:
-    Description: "(Optional) Tag key used to indicate the owner of an IAM user resource."
+  NotifyEmailAddress:
+    Description: "Email address that will be used in the 'sent to' section of the email."
     Type: String
     Default: ""
-  AWSOrgID:
-    Description: "Enter your AWS Organization ID, this will be used to restricted execution permissions to only approved AWS Accounts within your AWS Organization."
+  ResourceOwnerTag:
+    Description: "(Optional) Tag key used to indicate the owner of an IAM user resource."
     Type: String
     Default: ""
   IAMExemptionGroup:
@@ -139,14 +133,6 @@ Parameters:
     Description: "Enter the name of IAM Execution Role used by the account inventory Lambda."
     Type: String
     Default: "asa-iam-key-rotation-account-inventory-lambda-execution-role"
-  OrgListAccount:
-    Description: "Enter the account ID of the account that will be used to list Organization accounts"
-    Type: String
-    Default: ""
-  OrgListRole:
-    Description: "Enter the role that will be used to list Organization accounts"
-    Type: String
-    Default: "asa-iam-key-rotation-list-accounts-role"
   EmailTemplateEnforce:
     Description: "Enter the file name of the email html template to be sent out by the Notifier Module for Enforce Mode. Note: Must be located in the 'S3 Bucket Prefix/Template/template_name.html' folder"
     Type: String
@@ -186,13 +172,6 @@ Parameters:
     AllowedValues:
       - "True"
       - "False"
-  StoreSecretsInCentralAccount:
-    Description: "Select True to store secrets in central account, select False to store in respective account"
-    Type: String
-    Default: "False"
-    AllowedValues:
-      - "True"
-      - "False"
   CredentialReplicationRegions:
     Description: "Please provide the comma separated regions where you want to replicate the credentials (Secret Manager), e.g. us-east-2,us-west-1,us-west-2 Please skip the region where you are creating stack"
     Type: String
@@ -213,6 +192,10 @@ Parameters:
   SubnetId:
     Type: String
     Description: "Please enter Subnet Id for corresponding VPC  for Lambda Functions"
+  AWSAccountName:
+    Description: "AWS Account Name. Will be showing in the notification email."
+    Type: String
+    Default: ""
 Conditions:
   runInVPC: !Equals [!Ref RunLambdaInVPC, "True"]
 
@@ -262,9 +245,6 @@ Resources:
                 Action:
                   - s3:GetObject
                 Resource: !Sub 'arn:${AWS::Partition}:s3:::${S3BucketName}/${S3BucketPrefix}/Template/*' # Only allow access to Email Template Bucket
-                Condition:
-                  StringEquals:
-                    aws:PrincipalOrgID: !Ref AWSOrgID
               - Sid: AllowFunctionToSendEmail
                 Effect: Allow
                 Action:
@@ -330,10 +310,6 @@ Resources:
                   - sts:AssumeRole
                 Resource:
                   - !Sub 'arn:${AWS::Partition}:iam::*:role/${IAMRoleName}' # All accounts in Org
-                  - !Sub 'arn:${AWS::Partition}:iam::*:role/${OrgListRole}' # All accounts in Org
-                Condition:
-                  StringEquals:
-                    aws:PrincipalOrgID: !Ref AWSOrgID
               - Effect: Allow
                 Action:
                   - lambda:InvokeFunction
@@ -385,11 +361,8 @@ Resources:
           EmailTemplateEnforce: !Ref EmailTemplateEnforce
           EmailTemplateAudit: !Ref EmailTemplateAudit
           ResourceOwnerTag: !Ref ResourceOwnerTag
-          StoreSecretsInCentralAccount: !Ref StoreSecretsInCentralAccount
           CredentialReplicationRegions: !Ref CredentialReplicationRegions
           RunLambdaInVPC: !Ref RunLambdaInVPC
-          OrgListAccount: !Ref OrgListAccount
-          OrgListRole: !Ref OrgListRole
       Code:
         S3Bucket: !Ref S3BucketName
         S3Key: !Sub ${S3BucketPrefix}/Lambda/access_key_auto_rotation.zip
@@ -431,10 +404,6 @@ Resources:
             Statement:
               - Effect: Allow
                 Action:
-                  - sts:AssumeRole
-                Resource: !Sub 'arn:${AWS::Partition}:iam::${OrgListAccount}:role/${OrgListRole}'
-              - Effect: Allow
-                Action:
                   - lambda:InvokeFunction
                 Resource: !GetAtt AccessKeyRotateLambdaFunction.Arn
    AccountInventoryLambdaFunction:
@@ -461,10 +430,10 @@ Resources:
       Environment:
         Variables:
             LambdaRotationFunction: !Ref AccessKeyRotateLambdaFunction
-            OrgListAccount: !Ref OrgListAccount
-            OrgListRole: !Ref OrgListRole
             RoleSessionName: 'ASA-IAM-Access-Account-Inventory-Function'
             RunLambdaInVPC: !Ref RunLambdaInVPC
+            AWSAccountName: !Ref AWSAccountName
+            NotifyEmailAddress: !Ref NotifyEmailAddress
 
    AccountInventoryTriggerLambdaPermissions:
     Type: AWS::Lambda::Permission
